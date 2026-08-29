@@ -1,19 +1,29 @@
 {
   "name": "milky-mama",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "build:native": "vite build --mode native",
+    "preview": "vite preview --host 0.0.0.0",
+    "ios:prepare": "npm run build:native && node scripts/prepare-ios.mjs",
+    "ios:sync": "npm run build:native && npx cap sync ios",
+    "ios:open": "npm run ios:prepare && npx cap open ios"
   },
   "dependencies": {
+    "@capacitor/core": "^8.4.0",
+    "@capacitor/ios": "^8.4.0",
+    "@capacitor/local-notifications": "^8.0.0",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "lucide-react": "latest",
+    "milky-mama-alarm": "file:native/milky-mama-alarm",
     "react": "latest",
     "react-dom": "latest",
-    "lucide-react": "latest"
+    "vite": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.0"
+  }
 }
