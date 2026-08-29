@@ -98,6 +98,7 @@ export default function App() {
     setGameScore: (name, score) => setData(current => {
       const old = current.gameScores[name] || 0
       const next = name === 'mamaMatch' && old ? Math.min(old, score) : Math.max(old, score)
+      if (next === old) return current
       return { ...current, gameScores: { ...current.gameScores, [name]: next } }
     }),
   }
@@ -328,13 +329,13 @@ function DropPopScreen({ data, go, setGameScore }) {
   const [paused, setPaused] = useState(false)
   const [drops, setDrops] = useState(() => newDrops())
   useEffect(() => { if (paused || time <= 0) return undefined; const timer = setInterval(() => setTime(value => value - 1), 1000); return () => clearInterval(timer) }, [paused, time])
-  useEffect(() => { if (time === 0) setGameScore('dropPop', score) }, [time, score, setGameScore])
+  useEffect(() => { if (time === 0) setGameScore('dropPop', score) }, [time])
   const pop = id => { if (time <= 0 || paused) return; setScore(value => value + 30); setDrops(items => items.map(item => item.id === id ? randomDrop(id) : item)); if (data.settings.haptics && navigator.vibrate) navigator.vibrate(18) }
-  return <div className="screen night game-screen drop-pop-screen"><ScreenHeader title="Drop Pop" go={go} back="pump" night action={<span className="coin"><i />{data.gameScores.dropPop || 0}</span>} /><div className="game-hud"><span>{time} sec</span><strong>{score}<small>x{Math.max(1, Math.floor(score / 90) + 1)} Combo</small></strong><button className="round-night" onClick={() => setPaused(value => !value)} aria-label={paused ? 'Resume' : 'Pause'}>{paused ? <Play size={15} /> : <Pause size={15} />}</button></div><div className="drop-field"><NightStars />{drops.map(item => <button key={item.id} className={`drop drop-${item.kind}`} style={{ left: `${item.x}%`, top: `${item.y}%` }} onClick={() => pop(item.id)} aria-label="Pop drop"><span className="drop-shape"><i className="eye left" /><i className="eye right" /><i className="smile" /></span><b>+30</b></button>)}</div>{time === 0 && <div className="game-over"><strong>{score} points</strong><button className="pink-button" onClick={() => { setScore(0); setTime(30); setDrops(newDrops()) }}>Play Again</button></div>}</div>
+  return <div className="screen night game-screen drop-pop-screen"><ScreenHeader title="Drop Pop" go={go} back="pump" night action={<span className="coin"><i />{data.gameScores.dropPop || 0}</span>} /><div className="game-hud"><span>{time} sec</span><strong>{score}<small>x{Math.max(1, Math.floor(score / 90) + 1)} Combo</small></strong><button className="round-night" onClick={() => setPaused(value => !value)} aria-label={paused ? 'Resume' : 'Pause'}>{paused ? <Play size={15} /> : <Pause size={15} />}</button></div><div className={`drop-field ${(paused || time <= 0) ? 'paused' : ''}`}><NightStars />{drops.map(item => <button key={`${item.id}-${item.token}`} className={`drop drop-${item.kind}`} style={{ left: `${item.x}%`, top: `${item.y}%`, '--fall-duration': `${item.duration}s`, '--fall-delay': `${item.delay}s` }} onClick={() => pop(item.id)} aria-label="Pop drop"><span className="drop-shape"><i className="eye left" /><i className="eye right" /><i className="smile" /></span><b>+30</b></button>)}</div>{time === 0 && <div className="game-over"><strong>{score} points</strong><button className="pink-button" onClick={() => { setScore(0); setTime(30); setDrops(newDrops()) }}>Play Again</button></div>}</div>
 }
 
-function newDrops() { return Array.from({ length: 6 }, (_, index) => randomDrop(index)) }
-function randomDrop(id) { return { id, x: 7 + Math.random() * 80, y: 12 + Math.random() * 68, kind: id % 5 } }
+function newDrops() { return Array.from({ length: 7 }, (_, index) => randomDrop(index)) }
+function randomDrop(id) { return { id, token: Math.random().toString(36).slice(2), x: 5 + Math.random() * 82, y: -13, kind: id % 5, duration: 18 + Math.random() * 9, delay: -(Math.random() * 22) } }
 
 function MatchIcon({ type, size = 25 }) {
   const props = { size, strokeWidth: 1.9 }
@@ -348,18 +349,84 @@ function MatchIcon({ type, size = 25 }) {
   return <Droplets {...props} />
 }
 
+function makeMatchDeck() {
+  const deck = shuffle(MATCH_TYPES.flatMap(type => [type, type]))
+  return deck.map((type, index) => ({ id: `${index}-${Math.random().toString(36).slice(2, 7)}`, type, open: false, matched: false }))
+}
+
 function MamaMatchScreen({ data, go, setGameScore }) {
-  const makeCards = () => shuffle([...MATCH_TYPES, ...MATCH_TYPES]).map((type, index) => ({ id: index, type, open: false, matched: false }))
-  const [cards, setCards] = useState(makeCards)
+  const [cards, setCards] = useState(() => makeMatchDeck())
   const [moves, setMoves] = useState(0)
   const [seconds, setSeconds] = useState(0)
-  const open = cards.filter(card => card.open && !card.matched)
-  const done = cards.every(card => card.matched)
-  useEffect(() => { if (done) return undefined; const timer = setInterval(() => setSeconds(value => value + 1), 1000); return () => clearInterval(timer) }, [done])
-  useEffect(() => { if (done && seconds) setGameScore('mamaMatch', seconds) }, [done, seconds, setGameScore])
-  const flip = id => { if (open.length >= 2) return; const next = cards.map(card => card.id === id ? { ...card, open: true } : card); setCards(next); const opened = next.filter(card => card.open && !card.matched); if (opened.length === 2) { setMoves(value => value + 1); setTimeout(() => setCards(current => { const pair = current.filter(card => card.open && !card.matched); if (pair.length !== 2) return current; const [a, b] = pair; return a.type === b.type ? current.map(card => card.id === a.id || card.id === b.id ? { ...card, matched: true } : card) : current.map(card => card.id === a.id || card.id === b.id ? { ...card, open: false } : card) }), 500) } }
-  const restart = () => { setCards(makeCards()); setMoves(0); setSeconds(0) }
-  return <div className="screen night game-screen match-screen"><ScreenHeader title="Mama Match" go={go} back="pump" night /><NightStars /><div className="match-hud"><strong>{toClock(seconds)}</strong><span>Moves<b>{moves}</b></span></div><div className="match-grid">{cards.map(card => <button key={card.id} className={`match-card ${(card.open || card.matched) ? `open match-${card.type}` : ''}`} onClick={() => flip(card.id)} aria-label="Match card">{(card.open || card.matched) ? <MatchIcon type={card.type} /> : <Flower2 size={20} />}</button>)}</div>{done && <div className="game-over"><strong>Matched in {seconds}s</strong><button className="pink-button" onClick={restart}>Play Again</button></div>}</div>
+  const [started, setStarted] = useState(false)
+  const [selectedIds, setSelectedIds] = useState([])
+  const [locked, setLocked] = useState(false)
+  const selectionRef = useRef([])
+  const lockRef = useRef(false)
+  const done = cards.length === 16 && cards.every(card => card.matched)
+
+  useEffect(() => {
+    if (!started || done) return undefined
+    const timer = setInterval(() => setSeconds(value => value + 1), 1000)
+    return () => clearInterval(timer)
+  }, [started, done])
+
+  useEffect(() => {
+    if (!done || !seconds) return
+    setGameScore('mamaMatch', seconds)
+  }, [done])
+
+  useEffect(() => {
+    if (selectedIds.length !== 2) return undefined
+    const [firstId, secondId] = selectedIds
+    const timer = setTimeout(() => {
+      setCards(current => {
+        const first = current.find(card => card.id === firstId)
+        const second = current.find(card => card.id === secondId)
+        if (!first || !second) return current
+        const isMatch = first.type === second.type
+        return current.map(card => {
+          if (card.id !== firstId && card.id !== secondId) return card
+          return isMatch ? { ...card, matched: true, open: true } : { ...card, open: false }
+        })
+      })
+      selectionRef.current = []
+      lockRef.current = false
+      setSelectedIds([])
+      setLocked(false)
+    }, 650)
+    return () => clearTimeout(timer)
+  }, [selectedIds])
+
+  const flip = id => {
+    if (lockRef.current || done) return
+    const target = cards.find(card => card.id === id)
+    if (!target || target.matched || target.open || selectionRef.current.length >= 2) return
+    setStarted(true)
+    const nextSelection = [...selectionRef.current, id]
+    selectionRef.current = nextSelection
+    setSelectedIds(nextSelection)
+    setCards(current => current.map(card => card.id === id ? { ...card, open: true } : card))
+    if (nextSelection.length === 2) {
+      lockRef.current = true
+      setLocked(true)
+      setMoves(value => value + 1)
+    }
+    if (data.settings.haptics && navigator.vibrate) navigator.vibrate(10)
+  }
+
+  const restart = () => {
+    selectionRef.current = []
+    lockRef.current = false
+    setCards(makeMatchDeck())
+    setMoves(0)
+    setSeconds(0)
+    setStarted(false)
+    setSelectedIds([])
+    setLocked(false)
+  }
+
+  return <div className="screen night game-screen match-screen"><ScreenHeader title="Mama Match" go={go} back="pump" night /><NightStars /><div className="match-hud"><strong>{toClock(seconds)}</strong><span>Moves<b>{moves}</b></span></div><div className={`match-grid ${locked ? 'locked' : ''}`}>{cards.map(card => <button key={card.id} className={`match-card ${(card.open || card.matched) ? `open match-${card.type}` : ''} ${card.matched ? 'matched' : ''}`} onClick={() => flip(card.id)} aria-label={card.open || card.matched ? `${card.type} card` : 'Hidden match card'} aria-pressed={card.open || card.matched}>{(card.open || card.matched) ? <MatchIcon type={card.type} /> : <Flower2 size={20} />}</button>)}</div>{done && <div className="game-over"><strong>Matched in {seconds}s</strong><button className="pink-button" onClick={restart}>Play Again</button></div>}</div>
 }
 
 function SettingsScreen({ data, go, setData, updateSettings, installPrompt }) {
@@ -378,4 +445,4 @@ function calcStreak(sessions) { const days = [...new Set(sessions.map(session =>
 function dailyBuckets(sessions, count) { const result = []; for (let i = count - 1; i >= 0; i -= 1) { const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - i); const end = new Date(start); end.setDate(end.getDate() + 1); const value = sessions.filter(session => { const when = new Date(session.startedAt); return when >= start && when < end }).reduce((sum, session) => sum + Number(session.ounces), 0); result.push({ label: start.toLocaleDateString(undefined, { weekday: 'narrow' }), value }) } return result }
 function groupSessions(sessions) { return sessions.reduce((groups, session) => { const key = new Date(session.startedAt).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }); (groups[key] ??= []).push(session); return groups }, {}) }
 function getAchievements(data) { const count = data.sessions.length, total = data.sessions.reduce((sum, session) => sum + Number(session.ounces), 0), streak = calcStreak(data.sessions), stored = data.stash.reduce((sum, item) => sum + Number(item.ounces), 0); return [{ id: 'first', title: 'First Drop', desc: 'Log your first session', unlocked: count >= 1, progress: `${count}/1` }, { id: 'start', title: 'Getting Started', desc: 'Log 5 sessions', unlocked: count >= 5, progress: `${Math.min(count, 5)}/5` }, { id: 'track', title: 'Keeping Track', desc: 'Log 25 sessions', unlocked: count >= 25, progress: `${Math.min(count, 25)}/25` }, { id: 'routine', title: 'Routine Builder', desc: 'Reach a 3 day logging streak', unlocked: streak >= 3, progress: `${Math.min(streak, 3)}/3` }, { id: 'stash', title: 'Stash Starter', desc: 'Store 20 ounces', unlocked: stored >= 20, progress: `${Math.min(Math.round(stored), 20)}/20` }, { id: 'fifty', title: 'Fifty Ounces', desc: 'Pump 50 ounces total', unlocked: total >= 50, progress: `${Math.min(Math.round(total), 50)}/50` }] }
-function shuffle(items) { return [...items].sort(() => Math.random() - 0.5) }
+function shuffle(items) { const result = [...items]; for (let i = result.length - 1; i > 0; i -= 1) { const j = Math.floor(Math.random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]] } return result }
