@@ -1,8 +1,9 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App.jsx'
+import App from './AppNext.jsx'
 import './styles.css'
 import './reminders.css'
+import './features.css'
 import './push-client.js'
 
 if ('serviceWorker' in navigator) {
