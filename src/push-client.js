@@ -94,7 +94,7 @@ async function ensureSubscription({ askPermission = false } = {}) {
       userVisibleOnly: true,
       applicationServerKey: base64UrlToUint8Array(VAPID_PUBLIC_KEY),
     })
-  } catch (error) {
+  } catch {
     const stale = await registration.pushManager.getSubscription().catch(() => null)
     if (stale) await stale.unsubscribe().catch(() => {})
     subscription = await registration.pushManager.subscribe({
@@ -131,60 +131,9 @@ async function syncNow(force = false, { askPermission = false } = {}) {
   return result
 }
 
-async function testPush() {
-  await requestPermission()
-  const reminders = readReminderState()
-  const subscription = await ensureSubscription({ askPermission: false })
-  if (!subscription) throw new Error('Could not create a push subscription.')
-
-  await post({
-    action: 'save',
-    deviceId: deviceId(),
-    subscription: subscription.toJSON(),
-    enabled: Boolean(reminders?.enabled),
-    mode: reminders?.mode || 'interval',
-    intervalMinutes: reminders?.intervalMinutes || 180,
-    times: reminders?.times || [],
-    anchorAt: reminders?.anchorAt || Date.now(),
-    timezone: reminders?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-  })
-
-  return post({ action: 'test', deviceId: deviceId() })
-}
-
-function setButtonState(button, text, disabled = false) {
-  if (!button) return
-  button.textContent = text
-  button.disabled = disabled
-}
-
-// The reminder screen existed before the server push backend. Capture its test
-// button so a test proves a real Supabase -> Apple Web Push delivery instead
-// of merely creating a local notification in the open app.
-document.addEventListener('click', async event => {
-  const button = event.target?.closest?.('.reminder-test-button')
-  if (!button) return
-
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
-
-  const original = button.textContent || 'Test Notification'
-  setButtonState(button, 'Sending test...', true)
-  try {
-    await testPush()
-    setButtonState(button, 'Test sent', true)
-    setTimeout(() => setButtonState(button, original, false), 2200)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Could not send the test notification.'
-    setButtonState(button, message, true)
-    setTimeout(() => setButtonState(button, original, false), 5000)
-  }
-}, true)
-
 window.addEventListener('load', () => {
-  setTimeout(() => syncNow(true).catch(() => {}), 1200)
-  setInterval(() => syncNow(false).catch(() => {}), 5000)
+  setTimeout(() => syncNow(true).catch(() => {}), 800)
+  setInterval(() => syncNow(false).catch(() => {}), 4000)
 })
 
 document.addEventListener('visibilitychange', () => {
@@ -195,7 +144,6 @@ window.addEventListener('focus', () => syncNow(true).catch(() => {}))
 
 window.MilkyMamaPush = {
   sync: options => syncNow(true, options),
-  test: testPush,
   requestPermission,
   supported: () => supportState().supported,
   supportState,
