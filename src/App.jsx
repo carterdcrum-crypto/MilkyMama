@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Home, ClipboardList, TimerReset, Package, BarChart3, ChevronLeft, ChevronRight,
   Plus, Minus, Settings as SettingsIcon, History, Trophy, Flower2, Pause, Play,
-  Square, Droplets, Milk, Sparkles, X, Download, Trash2, RotateCcw, Check, Share2,
-  Sun, MoonStar, Heart, Star, Cloud, Leaf
+  Square, Droplets, Milk, Sparkles, X, Download, Check, Sun, MoonStar, Heart,
+  Star, Leaf, Bell, Clock3, Trash2
 } from 'lucide-react'
 
 const STORAGE_KEY = 'milkyMama.v1'
@@ -18,7 +18,13 @@ const defaultData = {
     reduceMotion: false,
     notifications: true,
   },
-  gameScores: { dropPop: 0, mamaMatch: 0 },
+  reminders: {
+    enabled: false,
+    mode: 'interval',
+    intervalMinutes: 180,
+    times: ['08:00', '12:00', '16:00', '20:00'],
+    anchorAt: null,
+  },
 }
 
 const NAV = [
@@ -29,7 +35,6 @@ const NAV = [
   ['progress', 'Progress', BarChart3],
 ]
 
-const MATCH_TYPES = ['flower', 'star', 'heart', 'cloud', 'moon', 'milk', 'leaf', 'drops']
 const ACHIEVEMENT_ICONS = {
   first: Droplets,
   start: Star,
@@ -50,15 +55,63 @@ function loadData() {
   try {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY))
     if (!parsed) return defaultData
+    const { gameScores, ...legacySafe } = parsed
     return {
       ...defaultData,
-      ...parsed,
+      ...legacySafe,
       settings: { ...defaultData.settings, ...parsed.settings },
-      gameScores: { ...defaultData.gameScores, ...parsed.gameScores },
+      reminders: { ...defaultData.reminders, ...parsed.reminders },
     }
   } catch {
     return defaultData
   }
+}
+
+async function syncReminderWorker(reminders) {
+  if (!('serviceWorker' in navigator)) return
+  try {
+    const registration = await navigator.serviceWorker.ready
+    const worker = registration.active || registration.waiting || registration.installing
+    worker?.postMessage({ type: 'REMINDER_CONFIG', config: reminders })
+    if ('periodicSync' in registration) {
+      if (reminders.enabled && Notification.permission === 'granted') {
+        await registration.periodicSync.register('milky-mama-pump-reminders', { minInterval: 15 * 60 * 1000 })
+      } else {
+        const tags = await registration.periodicSync.getTags()
+        if (tags.includes('milky-mama-pump-reminders')) await registration.periodicSync.unregister('milky-mama-pump-reminders')
+      }
+    }
+  } catch {
+    // Foreground reminder checks still work if background sync is unavailable.
+  }
+}
+
+async function requestPumpNotificationPermission() {
+  if (!('Notification' in window)) return 'unsupported'
+  if (Notification.permission === 'granted') return 'granted'
+  try {
+    return await Notification.requestPermission()
+  } catch {
+    return Notification.permission || 'denied'
+  }
+}
+
+function reminderVersion(reminders) {
+  return JSON.stringify({
+    enabled: reminders.enabled,
+    mode: reminders.mode,
+    intervalMinutes: reminders.intervalMinutes,
+    times: reminders.times,
+    anchorAt: reminders.anchorAt,
+  })
+}
+
+function postReminderCheck() {
+  if (!('serviceWorker' in navigator)) return
+  navigator.serviceWorker.ready.then(registration => {
+    const worker = registration.active || registration.waiting || registration.installing
+    worker?.postMessage({ type: 'CHECK_REMINDERS' })
+  }).catch(() => {})
 }
 
 export default function App() {
@@ -76,13 +129,30 @@ export default function App() {
     return () => window.removeEventListener('beforeinstallprompt', handler)
   }, [])
 
+  useEffect(() => {
+    syncReminderWorker(data.reminders)
+  }, [reminderVersion(data.reminders)])
+
+  useEffect(() => {
+    if (!data.reminders.enabled || !('Notification' in window) || Notification.permission !== 'granted') return undefined
+    postReminderCheck()
+    const timer = setInterval(postReminderCheck, 30000)
+    return () => clearInterval(timer)
+  }, [reminderVersion(data.reminders)])
+
   const go = target => {
     window.scrollTo({ top: 0, behavior: data.settings.reduceMotion ? 'auto' : 'smooth' })
     setScreen(target)
   }
 
   const saveSession = session => {
-    setData(current => ({ ...current, sessions: [session, ...current.sessions] }))
+    setData(current => ({
+      ...current,
+      sessions: [session, ...current.sessions],
+      reminders: current.reminders.mode === 'interval'
+        ? { ...current.reminders, anchorAt: Date.now() }
+        : current.reminders,
+    }))
     go('home')
   }
 
@@ -95,16 +165,11 @@ export default function App() {
     addStash: item => setData(current => ({ ...current, stash: [item, ...current.stash] })),
     removeStash: id => setData(current => ({ ...current, stash: current.stash.filter(item => item.id !== id) })),
     updateSettings: patch => setData(current => ({ ...current, settings: { ...current.settings, ...patch } })),
-    setGameScore: (name, score) => setData(current => {
-      const old = current.gameScores[name] || 0
-      const next = name === 'mamaMatch' && old ? Math.min(old, score) : Math.max(old, score)
-      if (next === old) return current
-      return { ...current, gameScores: { ...current.gameScores, [name]: next } }
-    }),
+    updateReminders: patch => setData(current => ({ ...current, reminders: { ...current.reminders, ...patch } })),
   }
 
   const main = NAV.some(([id]) => id === screen)
-  const night = ['pump', 'drop-pop', 'mama-match'].includes(screen)
+  const night = screen === 'pump'
 
   return <div className={`app-shell ${night ? 'night-shell' : ''}`}>
     <main className="phone-stage">
@@ -116,9 +181,8 @@ export default function App() {
       {screen === 'history' && <HistoryScreen {...common} />}
       {screen === 'achievements' && <AchievementsScreen {...common} />}
       {screen === 'garden' && <GardenScreen {...common} />}
-      {screen === 'drop-pop' && <DropPopScreen {...common} />}
-      {screen === 'mama-match' && <MamaMatchScreen {...common} />}
       {screen === 'settings' && <SettingsScreen {...common} />}
+      {screen === 'reminders' && <RemindersScreen {...common} />}
     </main>
     {main && <BottomNav current={screen} go={go} />}
   </div>
@@ -184,6 +248,7 @@ function HomeScreen({ data, go }) {
   const latest = data.sessions[0]
   const fridge = sumLocation(data.stash, 'Fridge')
   const freezer = sumLocation(data.stash, 'Freezer')
+  const nextReminder = getNextReminder(data.reminders, data.sessions)
   const GreetingIcon = hour < 18 ? Sun : MoonStar
 
   return <div className="screen light home-screen">
@@ -191,6 +256,7 @@ function HomeScreen({ data, go }) {
     <div className="progress-orbit" style={{ '--progress': `${pct * 3.6}deg` }}><div className="orbit-inner"><strong>{ounces.toFixed(1)}</strong><span>of {goal} oz</span><b>{pct}%</b></div></div>
     <div className="stat-grid three"><Stat label="Sessions" value={today.length} /><Stat label="Streak" value={calcStreak(data.sessions)} /><Stat label="Last Pump" value={latest ? relativeTime(new Date(latest.startedAt)) : 'None'} small /></div>
     <div className="stash-preview-grid"><button className="stash-preview fridge" onClick={() => go('stash')}><span>Fridge</span><strong>{fridge.toFixed(1)} oz</strong></button><button className="stash-preview freezer" onClick={() => go('stash')}><span>Freezer</span><strong>{freezer.toFixed(1)} oz</strong></button></div>
+    <button className="reminder-preview" onClick={() => go('reminders')}><span className="reminder-preview-icon"><Bell size={17} /></span><span><small>Pumping Reminder</small><strong>{data.reminders.enabled && nextReminder ? formatReminderDate(nextReminder) : 'Off'}</strong></span><ChevronRight size={16} /></button>
     <button className="primary-cta" onClick={() => go('pump')}><Milk size={18} /> Start Pumping</button>
     <button className="secondary-cta" onClick={() => go('log')}>Log Session</button>
     {data.sessions.length === 0 && <div className="empty-card compact home-empty"><Droplets size={21} /><div><strong>No sessions yet</strong><p>Start pumping or log a completed session.</p></div></div>}
@@ -238,6 +304,7 @@ function PumpScreen({ data, go, saveSession }) {
   const [finishMode, setFinishMode] = useState(false)
   const [ounces, setOunces] = useState(0)
   const started = useRef(new Date())
+  const nextReminder = getNextReminder(data.reminders, data.sessions)
 
   useEffect(() => { if (!running) return undefined; const timer = setInterval(() => setElapsed(value => value + 1), 1000); return () => clearInterval(timer) }, [running])
   const finish = () => { if (!finishMode) { setRunning(false); setFinishMode(true); return }; saveSession({ id: uid(), startedAt: started.current.toISOString(), ounces, durationSec: elapsed, leftOz: null, rightOz: null, tag: 'Pump Room', notes: '' }) }
@@ -248,14 +315,13 @@ function PumpScreen({ data, go, saveSession }) {
     <div className="timer-display">{toClock(elapsed)}<span>Elapsed</span></div>
     <div className="pump-actions"><button className="night-secondary" onClick={() => setRunning(value => !value)}>{running ? <Pause size={17} /> : <Play size={17} />}{running ? 'Pause' : 'Resume'}</button><button className="pink-button" onClick={finish}><Square size={15} />{finishMode ? 'Save' : 'Finish'}</button></div>
     {finishMode && <div className="finish-card"><label>How much did you pump?</label><Stepper value={ounces} setValue={setOunces} step={0.5} suffix="oz" /><button className="pink-button wide" onClick={finish}>Save Session</button></div>}
-    <section className="quick-games"><h2>Quick Games</h2><p>Play a game while you pump!</p><div className="game-cards two"><GameCard icon={<Droplets size={34} />} title="Drop Pop" meta={`High Score ${data.gameScores.dropPop || 0}`} tone="blue" onClick={() => go('drop-pop')} /><GameCard icon={<Heart size={34} />} title="Mama Match" meta={data.gameScores.mamaMatch ? `Best Time ${data.gameScores.mamaMatch}s` : 'No score yet'} tone="pink" onClick={() => go('mama-match')} /></div></section>
+    <button className="pump-reminder-card" onClick={() => go('reminders')}><span><Bell size={18} /></span><div><small>Pumping Reminders</small><strong>{data.reminders.enabled && nextReminder ? formatReminderDate(nextReminder) : 'Set a reminder schedule'}</strong></div><ChevronRight size={16} /></button>
     <div className="session-start-row"><span>Session Started</span><strong>{fmtTime(started.current)}</strong></div>
     <button className="cancel-session" onClick={() => go('home')}>Cancel Session</button>
   </div>
 }
 
 function NightStars() { return <div className="night-stars" aria-hidden="true">{Array.from({ length: 13 }, (_, i) => <i key={i} />)}</div> }
-function GameCard({ icon, title, meta, tone, onClick }) { return <button className="game-card" onClick={onClick}><span className={`game-icon ${tone}`}>{icon}</span><strong>{title}</strong><small>{meta}</small></button> }
 
 function StashScreen({ data, go, addStash, removeStash }) {
   const [filter, setFilter] = useState('All')
@@ -323,116 +389,92 @@ function HistoryScreen({ data, go }) {
   return <div className="screen light history-screen"><ScreenHeader title="History" go={go} />{data.sessions.length === 0 ? <Empty icon={<History size={21} />} title="No sessions yet" text="Completed pumping sessions will appear here." /> : Object.entries(grouped).map(([date, sessions]) => <section className="history-day" key={date}><h2>{date}</h2><div className="history-card">{sessions.map(session => <div className="history-row" key={session.id}><span className="history-time"><strong>{fmtTime(session.startedAt)}</strong><small>{fmtDuration(session.durationSec)}</small></span><strong className="history-ounces">{Number(session.ounces).toFixed(1)} oz</strong><span className="history-sides">{session.leftOz != null ? <><small>L {Number(session.leftOz).toFixed(1)}</small><small>R {Number(session.rightOz).toFixed(1)}</small></> : <small>{session.tag}</small>}</span></div>)}</div></section>)}</div>
 }
 
-function DropPopScreen({ data, go, setGameScore }) {
-  const [score, setScore] = useState(0)
-  const [time, setTime] = useState(30)
-  const [paused, setPaused] = useState(false)
-  const [drops, setDrops] = useState(() => newDrops())
-  useEffect(() => { if (paused || time <= 0) return undefined; const timer = setInterval(() => setTime(value => value - 1), 1000); return () => clearInterval(timer) }, [paused, time])
-  useEffect(() => { if (time === 0) setGameScore('dropPop', score) }, [time])
-  const pop = id => { if (time <= 0 || paused) return; setScore(value => value + 30); setDrops(items => items.map(item => item.id === id ? randomDrop(id) : item)); if (data.settings.haptics && navigator.vibrate) navigator.vibrate(18) }
-  return <div className="screen night game-screen drop-pop-screen"><ScreenHeader title="Drop Pop" go={go} back="pump" night action={<span className="coin"><i />{data.gameScores.dropPop || 0}</span>} /><div className="game-hud"><span>{time} sec</span><strong>{score}<small>x{Math.max(1, Math.floor(score / 90) + 1)} Combo</small></strong><button className="round-night" onClick={() => setPaused(value => !value)} aria-label={paused ? 'Resume' : 'Pause'}>{paused ? <Play size={15} /> : <Pause size={15} />}</button></div><div className={`drop-field ${(paused || time <= 0) ? 'paused' : ''}`}><NightStars />{drops.map(item => <button key={`${item.id}-${item.token}`} className={`drop drop-${item.kind}`} style={{ left: `${item.x}%`, top: `${item.y}%`, '--fall-duration': `${item.duration}s`, '--fall-delay': `${item.delay}s` }} onClick={() => pop(item.id)} aria-label="Pop drop"><span className="drop-shape"><i className="eye left" /><i className="eye right" /><i className="smile" /></span><b>+30</b></button>)}</div>{time === 0 && <div className="game-over"><strong>{score} points</strong><button className="pink-button" onClick={() => { setScore(0); setTime(30); setDrops(newDrops()) }}>Play Again</button></div>}</div>
-}
+function RemindersScreen({ data, go, updateReminders }) {
+  const reminders = data.reminders
+  const [permission, setPermission] = useState(() => 'Notification' in window ? Notification.permission : 'unsupported')
+  const nextReminder = getNextReminder(reminders, data.sessions)
 
-function newDrops() { return Array.from({ length: 7 }, (_, index) => randomDrop(index)) }
-function randomDrop(id) { return { id, token: Math.random().toString(36).slice(2), x: 5 + Math.random() * 82, y: -13, kind: id % 5, duration: 18 + Math.random() * 9, delay: -(Math.random() * 22) } }
-
-function MatchIcon({ type, size = 25 }) {
-  const props = { size, strokeWidth: 1.9 }
-  if (type === 'flower') return <Flower2 {...props} />
-  if (type === 'star') return <Star {...props} />
-  if (type === 'heart') return <Heart {...props} />
-  if (type === 'cloud') return <Cloud {...props} />
-  if (type === 'moon') return <MoonStar {...props} />
-  if (type === 'milk') return <Milk {...props} />
-  if (type === 'leaf') return <Leaf {...props} />
-  return <Droplets {...props} />
-}
-
-function makeMatchDeck() {
-  const deck = shuffle(MATCH_TYPES.flatMap(type => [type, type]))
-  return deck.map((type, index) => ({ id: `${index}-${Math.random().toString(36).slice(2, 7)}`, type, open: false, matched: false }))
-}
-
-function MamaMatchScreen({ data, go, setGameScore }) {
-  const [cards, setCards] = useState(() => makeMatchDeck())
-  const [moves, setMoves] = useState(0)
-  const [seconds, setSeconds] = useState(0)
-  const [started, setStarted] = useState(false)
-  const [selectedIds, setSelectedIds] = useState([])
-  const [locked, setLocked] = useState(false)
-  const selectionRef = useRef([])
-  const lockRef = useRef(false)
-  const done = cards.length === 16 && cards.every(card => card.matched)
-
-  useEffect(() => {
-    if (!started || done) return undefined
-    const timer = setInterval(() => setSeconds(value => value + 1), 1000)
-    return () => clearInterval(timer)
-  }, [started, done])
-
-  useEffect(() => {
-    if (!done || !seconds) return
-    setGameScore('mamaMatch', seconds)
-  }, [done])
-
-  useEffect(() => {
-    if (selectedIds.length !== 2) return undefined
-    const [firstId, secondId] = selectedIds
-    const timer = setTimeout(() => {
-      setCards(current => {
-        const first = current.find(card => card.id === firstId)
-        const second = current.find(card => card.id === secondId)
-        if (!first || !second) return current
-        const isMatch = first.type === second.type
-        return current.map(card => {
-          if (card.id !== firstId && card.id !== secondId) return card
-          return isMatch ? { ...card, matched: true, open: true } : { ...card, open: false }
-        })
-      })
-      selectionRef.current = []
-      lockRef.current = false
-      setSelectedIds([])
-      setLocked(false)
-    }, 650)
-    return () => clearTimeout(timer)
-  }, [selectedIds])
-
-  const flip = id => {
-    if (lockRef.current || done) return
-    const target = cards.find(card => card.id === id)
-    if (!target || target.matched || target.open || selectionRef.current.length >= 2) return
-    setStarted(true)
-    const nextSelection = [...selectionRef.current, id]
-    selectionRef.current = nextSelection
-    setSelectedIds(nextSelection)
-    setCards(current => current.map(card => card.id === id ? { ...card, open: true } : card))
-    if (nextSelection.length === 2) {
-      lockRef.current = true
-      setLocked(true)
-      setMoves(value => value + 1)
+  const enable = async value => {
+    if (!value) {
+      updateReminders({ enabled: false })
+      return
     }
-    if (data.settings.haptics && navigator.vibrate) navigator.vibrate(10)
+    const result = await requestPumpNotificationPermission()
+    setPermission(result)
+    if (result === 'granted') {
+      updateReminders({ enabled: true, anchorAt: reminders.mode === 'interval' ? Date.now() : reminders.anchorAt })
+      setTimeout(postReminderCheck, 250)
+    }
   }
 
-  const restart = () => {
-    selectionRef.current = []
-    lockRef.current = false
-    setCards(makeMatchDeck())
-    setMoves(0)
-    setSeconds(0)
-    setStarted(false)
-    setSelectedIds([])
-    setLocked(false)
+  const setMode = mode => {
+    updateReminders({ mode, anchorAt: mode === 'interval' ? Date.now() : reminders.anchorAt })
   }
 
-  return <div className="screen night game-screen match-screen"><ScreenHeader title="Mama Match" go={go} back="pump" night /><NightStars /><div className="match-hud"><strong>{toClock(seconds)}</strong><span>Moves<b>{moves}</b></span></div><div className={`match-grid ${locked ? 'locked' : ''}`}>{cards.map(card => <button key={card.id} className={`match-card ${(card.open || card.matched) ? `open match-${card.type}` : ''} ${card.matched ? 'matched' : ''}`} onClick={() => flip(card.id)} aria-label={card.open || card.matched ? `${card.type} card` : 'Hidden match card'} aria-pressed={card.open || card.matched}>{(card.open || card.matched) ? <MatchIcon type={card.type} /> : <Flower2 size={20} />}</button>)}</div>{done && <div className="game-over"><strong>Matched in {seconds}s</strong><button className="pink-button" onClick={restart}>Play Again</button></div>}</div>
+  const setIntervalMinutes = value => {
+    const minutes = clamp(Number(value) || 15, 15, 1440)
+    updateReminders({ intervalMinutes: minutes, anchorAt: Date.now() })
+  }
+
+  const addTime = () => {
+    if (reminders.times.length >= 12) return
+    const next = [...reminders.times, '12:00'].sort()
+    updateReminders({ times: next })
+  }
+
+  const updateTime = (index, value) => {
+    const next = reminders.times.map((time, i) => i === index ? value : time).filter(Boolean).sort()
+    updateReminders({ times: [...new Set(next)] })
+  }
+
+  const removeTime = index => {
+    updateReminders({ times: reminders.times.filter((_, i) => i !== index) })
+  }
+
+  const testNotification = async () => {
+    const result = await requestPumpNotificationPermission()
+    setPermission(result)
+    if (result !== 'granted') return
+    try {
+      const registration = await navigator.serviceWorker.ready
+      await registration.showNotification('Time to pump', {
+        body: 'Your Milky Mama pumping reminder is ready.',
+        icon: `${import.meta.env.BASE_URL}icon.svg`,
+        badge: `${import.meta.env.BASE_URL}icon.svg`,
+        tag: 'milky-mama-test',
+      })
+    } catch {
+      new Notification('Time to pump', { body: 'Your Milky Mama pumping reminder is ready.' })
+    }
+  }
+
+  return <div className="screen light reminders-screen">
+    <ScreenHeader title="Pumping Reminders" go={go} back="settings" />
+    <section className="reminder-hero"><div className="reminder-hero-icon"><Bell size={24} /></div><div><strong>Stay on your pumping schedule</strong><p>Choose a repeating interval or exact times that work for you.</p></div><Switch checked={reminders.enabled} onChange={enable} /></section>
+
+    <div className={`permission-card permission-${permission}`}><span><strong>Notifications</strong><small>{permissionLabel(permission)}</small></span>{permission !== 'granted' && permission !== 'unsupported' && <button onClick={async () => setPermission(await requestPumpNotificationPermission())}>Allow</button>}</div>
+
+    <Segmented value={reminders.mode} onChange={setMode} options={[["interval", "Custom Interval"], ["times", "Specific Times"]]} />
+
+    {reminders.mode === 'interval' ? <section className="reminder-panel">
+      <div className="reminder-panel-heading"><Clock3 size={18} /><div><strong>Repeat every</strong><small>The countdown resets when you save a pumping session.</small></div></div>
+      <div className="interval-control"><button onClick={() => setIntervalMinutes(reminders.intervalMinutes - 15)} aria-label="Decrease interval"><Minus size={15} /></button><div><input type="number" min="15" max="1440" step="15" value={reminders.intervalMinutes} onChange={event => setIntervalMinutes(event.target.value)} /><span>minutes</span><small>{formatInterval(reminders.intervalMinutes)}</small></div><button onClick={() => setIntervalMinutes(reminders.intervalMinutes + 15)} aria-label="Increase interval"><Plus size={15} /></button></div>
+    </section> : <section className="reminder-panel">
+      <div className="reminder-panel-heading"><Clock3 size={18} /><div><strong>Reminder times</strong><small>Add the exact times you want to be reminded each day.</small></div></div>
+      <div className="reminder-time-list">{reminders.times.map((time, index) => <div className="reminder-time-row" key={`${time}-${index}`}><input type="time" value={time} onChange={event => updateTime(index, event.target.value)} /><button onClick={() => removeTime(index)} aria-label={`Remove ${time}`}><Trash2 size={15} /></button></div>)}</div>
+      <button className="add-reminder-time" onClick={addTime} disabled={reminders.times.length >= 12}><Plus size={15} /> Add Time</button>
+    </section>}
+
+    <section className="next-reminder-card"><span>Next Reminder</span><strong>{reminders.enabled && nextReminder ? formatReminderDate(nextReminder) : 'Not scheduled'}</strong></section>
+    <button className="secondary-cta reminder-test-button" onClick={testNotification}>Test Notification</button>
+    {permission === 'unsupported' && <p className="reminder-support-note">System notifications are not available in this browser.</p>}
+  </div>
 }
 
 function SettingsScreen({ data, go, setData, updateSettings, installPrompt }) {
   const [goal, setGoal] = useState(data.settings.dailyGoal)
   const exportData = () => { const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'milky-mama-data.json'; link.click(); URL.revokeObjectURL(url) }
-  return <div className="screen light settings-screen"><ScreenHeader title="Settings" go={go} /><div className="settings-list"><SettingRow label="Daily Goal"><div className="inline-input"><input type="number" min="1" value={goal} onChange={event => { const value = Number(event.target.value || 24); setGoal(value); updateSettings({ dailyGoal: value }) }} /><span>oz</span></div></SettingRow><SettingRow label="Preferred Unit"><select value={data.settings.unit} onChange={event => updateSettings({ unit: event.target.value })}><option>oz</option><option>mL</option></select></SettingRow><SettingRow label="Haptics"><Switch checked={data.settings.haptics} onChange={value => updateSettings({ haptics: value })} /></SettingRow><SettingRow label="Sounds"><Switch checked={data.settings.sounds} onChange={value => updateSettings({ sounds: value })} /></SettingRow><SettingRow label="Reduce Motion"><Switch checked={data.settings.reduceMotion} onChange={value => updateSettings({ reduceMotion: value })} /></SettingRow><SettingRow label="Notifications"><Switch checked={data.settings.notifications} onChange={value => updateSettings({ notifications: value })} /></SettingRow></div><div className="settings-actions"><button onClick={exportData}><span>Export Data (JSON)</span><ChevronRight size={14} /></button><button onClick={() => setData(current => ({ ...current, gameScores: defaultData.gameScores }))}><span>Reset Game Scores</span><ChevronRight size={14} /></button><button onClick={() => setData(current => ({ ...current, sessions: [] }))}><span>Reset Session History</span><ChevronRight size={14} /></button><button className="danger" onClick={() => { if (confirm('Delete all Milky Mama data on this device?')) setData(defaultData) }}><span>Delete All Data</span></button></div>{installPrompt && <button className="install-row" onClick={() => installPrompt.prompt()}><Download size={16} /><span>Install Milky Mama</span><ChevronRight size={14} /></button>}</div>
+  return <div className="screen light settings-screen"><ScreenHeader title="Settings" go={go} /><button className="settings-reminder-link" onClick={() => go('reminders')}><span className="settings-reminder-icon"><Bell size={17} /></span><span><strong>Pumping Reminders</strong><small>{data.reminders.enabled ? reminderSummary(data.reminders) : 'Off'}</small></span><ChevronRight size={14} /></button><div className="settings-list"><SettingRow label="Daily Goal"><div className="inline-input"><input type="number" min="1" value={goal} onChange={event => { const value = Number(event.target.value || 24); setGoal(value); updateSettings({ dailyGoal: value }) }} /><span>oz</span></div></SettingRow><SettingRow label="Preferred Unit"><select value={data.settings.unit} onChange={event => updateSettings({ unit: event.target.value })}><option>oz</option><option>mL</option></select></SettingRow><SettingRow label="Haptics"><Switch checked={data.settings.haptics} onChange={value => updateSettings({ haptics: value })} /></SettingRow><SettingRow label="Sounds"><Switch checked={data.settings.sounds} onChange={value => updateSettings({ sounds: value })} /></SettingRow><SettingRow label="Reduce Motion"><Switch checked={data.settings.reduceMotion} onChange={value => updateSettings({ reduceMotion: value })} /></SettingRow></div><div className="settings-actions"><button onClick={exportData}><span>Export Data (JSON)</span><ChevronRight size={14} /></button><button onClick={() => setData(current => ({ ...current, sessions: [] }))}><span>Reset Session History</span><ChevronRight size={14} /></button><button className="danger" onClick={() => { if (confirm('Delete all Milky Mama data on this device?')) setData(defaultData) }}><span>Delete All Data</span></button></div>{installPrompt && <button className="install-row" onClick={() => installPrompt.prompt()}><Download size={16} /><span>Install Milky Mama</span><ChevronRight size={14} /></button>}</div>
 }
 
 function SettingRow({ label, children }) { return <div className="setting-row"><span>{label}</span>{children}</div> }
@@ -445,4 +487,59 @@ function calcStreak(sessions) { const days = [...new Set(sessions.map(session =>
 function dailyBuckets(sessions, count) { const result = []; for (let i = count - 1; i >= 0; i -= 1) { const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - i); const end = new Date(start); end.setDate(end.getDate() + 1); const value = sessions.filter(session => { const when = new Date(session.startedAt); return when >= start && when < end }).reduce((sum, session) => sum + Number(session.ounces), 0); result.push({ label: start.toLocaleDateString(undefined, { weekday: 'narrow' }), value }) } return result }
 function groupSessions(sessions) { return sessions.reduce((groups, session) => { const key = new Date(session.startedAt).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }); (groups[key] ??= []).push(session); return groups }, {}) }
 function getAchievements(data) { const count = data.sessions.length, total = data.sessions.reduce((sum, session) => sum + Number(session.ounces), 0), streak = calcStreak(data.sessions), stored = data.stash.reduce((sum, item) => sum + Number(item.ounces), 0); return [{ id: 'first', title: 'First Drop', desc: 'Log your first session', unlocked: count >= 1, progress: `${count}/1` }, { id: 'start', title: 'Getting Started', desc: 'Log 5 sessions', unlocked: count >= 5, progress: `${Math.min(count, 5)}/5` }, { id: 'track', title: 'Keeping Track', desc: 'Log 25 sessions', unlocked: count >= 25, progress: `${Math.min(count, 25)}/25` }, { id: 'routine', title: 'Routine Builder', desc: 'Reach a 3 day logging streak', unlocked: streak >= 3, progress: `${Math.min(streak, 3)}/3` }, { id: 'stash', title: 'Stash Starter', desc: 'Store 20 ounces', unlocked: stored >= 20, progress: `${Math.min(Math.round(stored), 20)}/20` }, { id: 'fifty', title: 'Fifty Ounces', desc: 'Pump 50 ounces total', unlocked: total >= 50, progress: `${Math.min(Math.round(total), 50)}/50` }] }
-function shuffle(items) { const result = [...items]; for (let i = result.length - 1; i > 0; i -= 1) { const j = Math.floor(Math.random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]] } return result }
+
+function getNextReminder(reminders, sessions, now = new Date()) {
+  if (!reminders?.enabled) return null
+  if (reminders.mode === 'times') {
+    const times = [...new Set((reminders.times || []).filter(Boolean))].sort()
+    if (!times.length) return null
+    for (const time of times) {
+      const [hour, minute] = time.split(':').map(Number)
+      const candidate = new Date(now)
+      candidate.setHours(hour, minute, 0, 0)
+      if (candidate.getTime() > now.getTime()) return candidate
+    }
+    const [hour, minute] = times[0].split(':').map(Number)
+    const tomorrow = new Date(now)
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    tomorrow.setHours(hour, minute, 0, 0)
+    return tomorrow
+  }
+
+  const intervalMs = clamp(Number(reminders.intervalMinutes) || 180, 15, 1440) * 60000
+  const latest = sessions?.[0]
+  const sessionAnchor = latest ? new Date(latest.startedAt).getTime() + Number(latest.durationSec || 0) * 1000 : null
+  const anchor = Number(reminders.anchorAt || sessionAnchor || now.getTime())
+  const elapsed = Math.max(0, now.getTime() - anchor)
+  const steps = Math.floor(elapsed / intervalMs) + 1
+  return new Date(anchor + steps * intervalMs)
+}
+
+function formatReminderDate(date) {
+  const now = new Date()
+  const sameDate = date.toDateString() === now.toDateString()
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1)
+  const prefix = sameDate ? 'Today' : date.toDateString() === tomorrow.toDateString() ? 'Tomorrow' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return `${prefix}, ${date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+}
+
+function formatInterval(minutes) {
+  const total = clamp(Number(minutes) || 15, 15, 1440)
+  const hours = Math.floor(total / 60)
+  const mins = total % 60
+  if (!hours) return `Every ${mins} minutes`
+  if (!mins) return `Every ${hours} ${hours === 1 ? 'hour' : 'hours'}`
+  return `Every ${hours}h ${mins}m`
+}
+
+function reminderSummary(reminders) {
+  if (reminders.mode === 'times') return `${reminders.times.length} daily ${reminders.times.length === 1 ? 'time' : 'times'}`
+  return formatInterval(reminders.intervalMinutes)
+}
+
+function permissionLabel(permission) {
+  if (permission === 'granted') return 'Allowed on this device'
+  if (permission === 'denied') return 'Blocked in browser settings'
+  if (permission === 'unsupported') return 'Not supported in this browser'
+  return 'Permission required'
+}
