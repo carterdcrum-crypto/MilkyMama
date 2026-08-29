@@ -1,0 +1,53 @@
+name: Build Milky Mama iOS Wrapper
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate Capacitor iOS project
+        run: npm run ios:prepare
+
+      - name: Build unsigned iOS simulator app
+        run: |
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$PWD/ios-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package simulator build
+        run: |
+          APP_PATH=$(find ios-build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" MilkyMama-iOS-Simulator.zip
+
+      - name: Upload iOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MilkyMama-iOS-Simulator
+          path: MilkyMama-iOS-Simulator.zip
+          if-no-files-found: error
