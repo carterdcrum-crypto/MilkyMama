@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-export default defineConfig({
-  base: '/MilkyMama/',
+export default defineConfig(({ mode }) => ({
+  base: mode === 'native' ? './' : '/MilkyMama/',
   plugins: [react()],
   server: { host: '0.0.0.0' },
-})
+}))
