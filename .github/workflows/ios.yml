@@ -45,9 +45,41 @@ jobs:
           test -n "$APP_PATH"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" MilkyMama-iOS-Simulator.zip
 
-      - name: Upload iOS build
+      - name: Upload simulator build
         uses: actions/upload-artifact@v4
         with:
           name: MilkyMama-iOS-Simulator
           path: MilkyMama-iOS-Simulator.zip
+          if-no-files-found: error
+
+      - name: Build unsigned iPhone app for Sideloadly
+        run: |
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/ios-device-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            DEVELOPMENT_TEAM='' \
+            build
+
+      - name: Package Sideloadly IPA
+        run: |
+          APP_PATH=$(find ios-device-build/Build/Products/Debug-iphoneos -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$APP_PATH"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          /usr/bin/zip -qry MilkyMama-Sideloadly.ipa Payload
+          test -s MilkyMama-Sideloadly.ipa
+
+      - name: Upload Sideloadly IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MilkyMama-Sideloadly-IPA
+          path: MilkyMama-Sideloadly.ipa
           if-no-files-found: error
