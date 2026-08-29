@@ -38,21 +38,65 @@ function readReminderState() {
 }
 
 async function post(body) {
-  const response = await fetch(PUSH_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) throw new Error(`Push sync failed: ${response.status}`)
-  return response.json()
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 12000)
+  try {
+    const response = await fetch(PUSH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || `Push request failed: ${response.status}`)
+    return payload
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
-async function ensureSubscription() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return null
+function isHomeScreenApp() {
+  return window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true
+}
+
+function supportState() {
+  if (!('serviceWorker' in navigator) || !('Notification' in window) || !('PushManager' in window)) {
+    return { supported: false, reason: 'Web Push is not available in this browser.' }
+  }
+  if (!isHomeScreenApp()) {
+    return { supported: false, reason: 'Add Milky Mama to your iPhone Home Screen first, then open it from the Home Screen.' }
+  }
+  return { supported: true, reason: '' }
+}
+
+async function requestPermission() {
+  const support = supportState()
+  if (!support.supported) throw new Error(support.reason)
+  if (Notification.permission === 'granted') return 'granted'
+  if (Notification.permission === 'denied') throw new Error('Notifications are blocked. Allow Milky Mama notifications in iPhone Settings.')
+  const result = await Notification.requestPermission()
+  if (result !== 'granted') throw new Error('Notification permission was not granted.')
+  return result
+}
+
+async function ensureSubscription({ askPermission = false } = {}) {
+  const support = supportState()
+  if (!support.supported) throw new Error(support.reason)
+  if (askPermission) await requestPermission()
   if (Notification.permission !== 'granted') return null
+
   const registration = await navigator.serviceWorker.ready
   let subscription = await registration.pushManager.getSubscription()
-  if (!subscription) {
+  if (subscription) return subscription
+
+  try {
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: base64UrlToUint8Array(VAPID_PUBLIC_KEY),
+    })
+  } catch (error) {
+    const stale = await registration.pushManager.getSubscription().catch(() => null)
+    if (stale) await stale.unsubscribe().catch(() => {})
     subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: base64UrlToUint8Array(VAPID_PUBLIC_KEY),
@@ -61,34 +105,82 @@ async function ensureSubscription() {
   return subscription
 }
 
-async function syncNow(force = false) {
+async function syncNow(force = false, { askPermission = false } = {}) {
   const reminders = readReminderState()
-  if (!reminders) return
+  if (!reminders) return { ok: false, reason: 'missing_state' }
 
   const fingerprint = JSON.stringify(reminders)
-  if (!force && localStorage.getItem(LAST_SYNC_KEY) === fingerprint) return
+  if (!force && localStorage.getItem(LAST_SYNC_KEY) === fingerprint) return { ok: true, skipped: true }
 
   if (!reminders.enabled) {
     await post({ action: 'disable', deviceId: deviceId() }).catch(() => {})
     localStorage.setItem(LAST_SYNC_KEY, fingerprint)
-    return
+    return { ok: true, disabled: true }
   }
 
-  const subscription = await ensureSubscription()
-  if (!subscription) return
+  const subscription = await ensureSubscription({ askPermission })
+  if (!subscription) return { ok: false, reason: 'permission_required' }
 
-  await post({
+  const result = await post({
     action: 'save',
     deviceId: deviceId(),
     subscription: subscription.toJSON(),
     ...reminders,
   })
   localStorage.setItem(LAST_SYNC_KEY, fingerprint)
+  return result
 }
 
-function isHomeScreenApp() {
-  return window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true
+async function testPush() {
+  await requestPermission()
+  const reminders = readReminderState()
+  const subscription = await ensureSubscription({ askPermission: false })
+  if (!subscription) throw new Error('Could not create a push subscription.')
+
+  await post({
+    action: 'save',
+    deviceId: deviceId(),
+    subscription: subscription.toJSON(),
+    enabled: Boolean(reminders?.enabled),
+    mode: reminders?.mode || 'interval',
+    intervalMinutes: reminders?.intervalMinutes || 180,
+    times: reminders?.times || [],
+    anchorAt: reminders?.anchorAt || Date.now(),
+    timezone: reminders?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  })
+
+  return post({ action: 'test', deviceId: deviceId() })
 }
+
+function setButtonState(button, text, disabled = false) {
+  if (!button) return
+  button.textContent = text
+  button.disabled = disabled
+}
+
+// The reminder screen existed before the server push backend. Capture its test
+// button so a test proves a real Supabase -> Apple Web Push delivery instead
+// of merely creating a local notification in the open app.
+document.addEventListener('click', async event => {
+  const button = event.target?.closest?.('.reminder-test-button')
+  if (!button) return
+
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+
+  const original = button.textContent || 'Test Notification'
+  setButtonState(button, 'Sending test...', true)
+  try {
+    await testPush()
+    setButtonState(button, 'Test sent', true)
+    setTimeout(() => setButtonState(button, original, false), 2200)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not send the test notification.'
+    setButtonState(button, message, true)
+    setTimeout(() => setButtonState(button, original, false), 5000)
+  }
+}, true)
 
 window.addEventListener('load', () => {
   setTimeout(() => syncNow(true).catch(() => {}), 1200)
@@ -102,10 +194,9 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('focus', () => syncNow(true).catch(() => {}))
 
 window.MilkyMamaPush = {
-  sync: () => syncNow(true),
-  test: async () => {
-    await syncNow(true)
-    return post({ action: 'test', deviceId: deviceId() })
-  },
-  supported: () => isHomeScreenApp() && 'PushManager' in window && 'Notification' in window,
+  sync: options => syncNow(true, options),
+  test: testPush,
+  requestPermission,
+  supported: () => supportState().supported,
+  supportState,
 }
