@@ -63,7 +63,8 @@ public class MilkyMamaAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
         if #available(iOS 26.0, *) {
             Task { @MainActor in
                 let manager = AlarmManager.shared
-                for alarm in manager.alarms {
+                let alarms = (try? manager.alarms) ?? []
+                for alarm in alarms {
                     try? manager.cancel(id: alarm.id)
                 }
                 call.resolve(["ok": true])
@@ -102,13 +103,24 @@ public class MilkyMamaAlarmPlugin: CAPPlugin, CAPBridgedPlugin {
                         return
                     }
 
-                    for alarm in manager.alarms {
+                    let existing = (try? manager.alarms) ?? []
+                    for alarm in existing {
                         try? manager.cancel(id: alarm.id)
                     }
 
                     var scheduled = 0
                     for fireDate in dates {
-                        let alert = AlarmPresentation.Alert(title: "Time to Pump")
+                        let stopButton = AlarmButton(
+                            text: "Stop",
+                            textColor: .white,
+                            systemImageName: "stop.circle"
+                        )
+                        let alert = AlarmPresentation.Alert(
+                            title: "Time to Pump",
+                            stopButton: stopButton,
+                            secondaryButton: nil,
+                            secondaryButtonBehavior: nil
+                        )
                         let presentation = AlarmPresentation(alert: alert)
                         let attributes = AlarmAttributes(
                             presentation: presentation,
