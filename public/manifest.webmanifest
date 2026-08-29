@@ -2,12 +2,13 @@
   "name": "Milky Mama",
   "short_name": "Milky Mama",
   "description": "A warm, playful pumping and breast-milk tracking companion.",
-  "start_url": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#FFF9F5",
   "theme_color": "#FFF9F5",
   "orientation": "portrait-primary",
   "icons": [
-    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
   ]
 }
