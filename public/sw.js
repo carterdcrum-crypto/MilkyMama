@@ -1,4 +1,4 @@
-const CACHE = 'milky-mama-v4'
+const CACHE = 'milky-mama-v5'
 const SCOPE = new URL(self.registration.scope)
 const asset = path => new URL(path, SCOPE).toString()
 const CORE = [asset('./'), asset('index.html'), asset('manifest.webmanifest'), asset('icon.svg')]
