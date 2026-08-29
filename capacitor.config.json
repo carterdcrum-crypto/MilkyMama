@@ -1,0 +1,8 @@
+{
+  "appId": "com.milkymama.app",
+  "appName": "Milky Mama",
+  "webDir": "dist",
+  "server": {
+    "iosScheme": "capacitor"
+  }
+}
